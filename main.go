@@ -1,9 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -16,12 +16,7 @@ import (
 type Options struct {
 	// Example of verbosity with level
 	Verbose []bool `short:"v" long:"verbose" description:"Verbose output"`
-
-	// Example of optional value
-	User string `short:"u" long:"user" description:"User name" optional:"yes" optional-value:"pancake"`
-
-	// Example of map with multiple default values
-	Users map[string]string `long:"users" description:"User e-mail map" default:"system:system@example.org" default:"admin:admin@example.org"`
+	Pipe    string `long:"pipe" description:"pipe output through an external command" default:"bat"`
 }
 
 type VimHelpCmd struct {
@@ -29,6 +24,21 @@ type VimHelpCmd struct {
 	RuntimePath string `short:"r" long:"vimruntime" description:"path of runtime" default:"/usr/share/nvim/runtime"`
 	MaxLines    int    `short:"l" long:"max-lines" description:"most lines to display" default:"20"`
 	Key         string `short:"k" long:"key" description:"Key of help item" required:"yes"`
+}
+
+func Piper(piper string, args []string) (func() error, io.WriteCloser, error) {
+	if piper != "" {
+		cmd := exec.Command(piper, args...)
+		p, err := cmd.StdinPipe()
+		if err != nil {
+			return nil, nil, err
+		}
+		cmd.Stdout = os.Stdout
+		err = cmd.Start()
+		return cmd.Wait, p, err
+	}
+	return func() error { return nil }, os.Stdout, nil
+	// return nil, errors.New("not implemented")
 }
 
 func (c *VimHelpCmd) Execute(args []string) error {
@@ -56,9 +66,13 @@ func (c *VimHelpCmd) Execute(args []string) error {
 			}
 		}
 	}
+	waiter, out, err := Piper(c.Options.Pipe, nil)
+	if err != nil {
+		return err
+	}
 	for i, s := range matches {
 		for _, m := range s {
-			fmt.Println("match level ", i)
+			fmt.Fprintln(out, "match level ", i)
 			b, err := ioutil.ReadFile(filepath.Join(c.RuntimePath, "doc", m.file))
 			if err != nil {
 				return err
@@ -72,9 +86,9 @@ func (c *VimHelpCmd) Execute(args []string) error {
 			if len(lines) > c.MaxLines {
 				lines = lines[:c.MaxLines]
 			}
-			fmt.Printf("\u001b[1m%s\u001b[0m\n", lines[0])
-			fmt.Println(strings.Join(lines[1:], "\n"))
-			return nil
+			fmt.Fprintf(out, "\u001b[1m%s\u001b[0m\n", lines[0])
+			fmt.Fprintln(out, strings.Join(lines[1:], "\n"))
+			return waiter()
 		}
 	}
 	return errors.New("not found or some error")
@@ -89,10 +103,27 @@ func (c *CliHelpCmd) Execute(args []string) error {
 	fmt.Printf("Show: key=%v\n", c.Key)
 	fmt.Printf("\u001b[1m\u001b[7m%s\u001b[0m\n", c.Key)
 	cmd := exec.Command("man", c.Key)
-	b := bytes.NewBuffer(nil)
-	cmd.Stdout = b
+	pargs := []string{}
+	if c.Options.Pipe == "bat" {
+		pargs = []string{"--language", "man", "--style", "plain"}
+	}
+	waiter, out, err := Piper(c.Options.Pipe, pargs)
+	if err != nil {
+		return err
+	}
+	cmd.Stdout = out
 	//cmd.Stdout = os.Stdout
 	if err := cmd.Run(); err != nil {
+		out.Close()
+
+		pargs := []string{}
+		if c.Options.Pipe == "bat" {
+			pargs = []string{"--style", "plain"}
+		}
+		waiter, out, err := Piper(c.Options.Pipe, pargs) // not a man page
+		if err != nil {
+			return err
+		}
 		/*
 			if cmd := exec.Command("which", os.Args[2]); true {
 				cmd.Stdout = os.Stdout
@@ -101,25 +132,27 @@ func (c *CliHelpCmd) Execute(args []string) error {
 				}
 			}
 		*/
+
 		cmd := exec.Command(c.Key, "--help")
 		// reset
-		b = bytes.NewBuffer(nil)
-		cmd.Stdout = b
-		b2 := bytes.NewBuffer(nil)
-		cmd.Stderr = b2
+		cmd.Stdout = out
+		cmd.Stderr = out
 		//cmd.Stdout = os.Stdout
 		if err := cmd.Run(); err != nil {
-			fmt.Printf("No help found for %s\n", c.Key)
-			lines := strings.Split(b2.String(), "\n")
-			fmt.Printf("\u001b[1m%s\u001b[0m\n", lines[0])
-			fmt.Println(strings.Join(lines[1:], "\n"))
+			/*
+				fmt.Fprintf(out, "No help found for %s\n", c.Key)
+				lines := strings.Split(b2.String(), "\n")
+				fmt.Frintf(out, "\u001b[1m%s\u001b[0m\n", lines[0])
+				fmt.Fprintln(out, strings.Join(lines[1:], "\n"))
+			*/
 			return err
 		}
+		return waiter()
 	}
-	lines := strings.Split(b.String(), "\n")
-	fmt.Printf("\u001b[1m%s\u001b[0m\n", lines[0])
-	fmt.Println(strings.Join(lines[1:], "\n"))
-	return nil
+	//lines := strings.Split(b.String(), "\n")
+	//fmt.Fprintf(out, "\u001b[1m%s\u001b[0m\n", lines[0])
+	//fmt.Fprintln(out, strings.Join(lines[1:], "\n"))
+	return waiter()
 }
 
 type VimToplevel struct {
