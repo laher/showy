@@ -16,12 +16,13 @@ import (
 type Options struct {
 	// Example of verbosity with level
 	Verbose []bool `short:"v" long:"verbose" description:"Verbose output"`
-	Pipe    string `long:"pipe" description:"pipe output through an external command" default:"bat"`
+	Piper   string `long:"piper" description:"pipe output through an external command" default:"bat"`
 }
 
 type VimHelpCmd struct {
-	Options     *Options
-	RuntimePath string `short:"r" long:"vimruntime" description:"path of runtime" default:"/usr/share/nvim/runtime"`
+	options     *Options
+	Piper       string `long:"piper" description:"pipe output through an external command" default:"vimless"`
+	RuntimePath string `short:"r" long:"vimruntime" description:"path of runtime" default:"/usr/share/vim/vim82"`
 	MaxLines    int    `short:"l" long:"max-lines" description:"most lines to display" default:"20"`
 	Key         string `short:"k" long:"key" description:"Key of help item" required:"yes"`
 }
@@ -66,7 +67,16 @@ func (c *VimHelpCmd) Execute(args []string) error {
 			}
 		}
 	}
-	waiter, out, err := Piper(c.Options.Pipe, nil)
+	piper := c.Piper
+	pargs := []string{}
+	if piper == "vimless" {
+		piper = "vim"
+		conf := filepath.Join(c.RuntimePath, "macros", "less.vim")
+		pargs = []string{"-u", conf}
+	} else if piper == "bat" {
+		pargs = []string{"--style", "plain"}
+	}
+	waiter, out, err := Piper(piper, pargs)
 	if err != nil {
 		return err
 	}
@@ -95,32 +105,32 @@ func (c *VimHelpCmd) Execute(args []string) error {
 }
 
 type CliHelpCmd struct {
-	Options *Options
+	options *Options
 	Key     string `short:"k" long:"key" description:"Key of item" required:"yes"`
 }
 
 func (c *CliHelpCmd) Execute(args []string) error {
-	fmt.Printf("Show: key=%v\n", c.Key)
-	fmt.Printf("\u001b[1m\u001b[7m%s\u001b[0m\n", c.Key)
 	cmd := exec.Command("man", c.Key)
 	pargs := []string{}
-	if c.Options.Pipe == "bat" {
+	if c.options.Piper == "bat" {
 		pargs = []string{"--language", "man", "--style", "plain"}
 	}
-	waiter, out, err := Piper(c.Options.Pipe, pargs)
+	waiter, out, err := Piper(c.options.Piper, pargs)
 	if err != nil {
 		return err
 	}
+	fmt.Fprintf(out, "Show: key=%v\n", c.Key)
+	fmt.Fprintf(out, "\u001b[1m\u001b[7m%s\u001b[0m\n", c.Key)
 	cmd.Stdout = out
 	//cmd.Stdout = os.Stdout
 	if err := cmd.Run(); err != nil {
-		out.Close()
+		//out.Close()
 
 		pargs := []string{}
-		if c.Options.Pipe == "bat" {
+		if c.options.Piper == "bat" {
 			pargs = []string{"--style", "plain"}
 		}
-		waiter, out, err := Piper(c.Options.Pipe, pargs) // not a man page
+		waiter, out, err := Piper(c.options.Piper, pargs) // not a man page
 		if err != nil {
 			return err
 		}
@@ -156,7 +166,7 @@ func (c *CliHelpCmd) Execute(args []string) error {
 }
 
 type VimToplevel struct {
-	Options *Options
+	options *Options
 	Key     string `short:"k" long:"key" description:"Key of item" required:"yes"`
 }
 
@@ -179,20 +189,21 @@ func (c *VimToplevel) Execute(args []string) error {
 }
 
 type CfgCmd struct {
-	Options *Options
+	options *Options
 }
 
 func (c *CfgCmd) Execute(args []string) error {
-	fmt.Printf("Options: %+v\n", c.Options)
+	fmt.Printf("Options: %+v\n", c.options)
 	return nil
 }
+
 func main() {
 	var (
 		options    = &Options{}
 		parser     = flags.NewParser(options, flags.Default)
-		vimHelpCmd = &VimHelpCmd{Options: options}
-		cliHelp    = &CliHelpCmd{Options: options}
-		cfgCmd     = &CfgCmd{Options: options}
+		vimHelpCmd = &VimHelpCmd{options: options}
+		cliHelp    = &CliHelpCmd{options: options}
+		cfgCmd     = &CfgCmd{options: options}
 	)
 	parser.AddCommand("vim:help", "preview a vim help entry", "show vim:help", vimHelpCmd)
 	parser.AddCommand("cli:help", "show manpage/help for a CLI command", "preview help for a command", cliHelp)
