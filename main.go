@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/jessevdk/go-flags"
@@ -21,9 +22,10 @@ type Options struct {
 
 type VimHelpCmd struct {
 	options     *Options
-	Piper       string `long:"piper" description:"pipe output through an external command" default:"vimless"`
+	Piper       string `long:"piper" description:"pipe output through an external command" default:""`
 	RuntimePath string `short:"r" long:"vimruntime" description:"path of runtime" default:"/usr/share/vim/vim82"`
 	MaxLines    int    `short:"l" long:"max-lines" description:"most lines to display" default:"20"`
+	Format      int    `short:"f" long:"format" description:"format of incoming data. 0=key-only,1=fuzzymenu-style"`
 	Key         string `short:"k" long:"key" description:"Key of help item" required:"yes"`
 }
 
@@ -43,6 +45,46 @@ func Piper(piper string, args []string) (func() error, io.WriteCloser, error) {
 }
 
 func (c *VimHelpCmd) Execute(args []string) error {
+	piper := c.Piper
+	pargs := []string{}
+	if piper == "vimless" {
+		piper = "vim"
+		conf := filepath.Join(c.RuntimePath, "macros", "less.vim")
+		pargs = []string{"-u", conf}
+	} else if piper == "bat" {
+		pargs = []string{"--style", "plain"}
+	}
+	waiter, out, err := Piper(piper, pargs)
+	if err != nil {
+		return err
+	}
+	k := c.Key
+	switch c.Format {
+	case 1:
+		// from fuzzymenu (or similar)
+		// format is:
+		// `description-plus-tags`
+		// `tab-plus-space`
+		// `command`
+		re := regexp.MustCompile(`\t\s*`)
+		parts := re.Split(k, 2)
+		if len(parts) > 1 {
+			k = parts[1]
+		}
+		fmt.Fprintln(out, reverse(parts[0]))
+		prefs := map[string]string{"normal: ": "Normal Mode command", "visual: ": "Visual mode command", ":set ": "Set a variable", ":call ": "Call a function", ":": "Ex mode command"}
+		for pref, desc := range prefs {
+			if strings.HasPrefix(k, pref) {
+				k = k[len(pref):]
+				fmt.Fprintf(out, teal("%s:\n", desc))
+				break
+			}
+		}
+		fmt.Fprintln(out, green("%s\n", parts[1]))
+	default:
+		fmt.Fprintln(out, green("%s\n", k))
+	}
+
 	b, err := ioutil.ReadFile(filepath.Join(c.RuntimePath, "doc", "tags"))
 	if err != nil {
 		return err
@@ -58,31 +100,20 @@ func (c *VimHelpCmd) Execute(args []string) error {
 		parts := strings.Split(l, "\t")
 		if len(parts) == 3 {
 			m := match{key: parts[0], file: parts[1], lookup: parts[2]}
-			if m.key == c.Key || m.key == "<"+c.Key+">" {
+			if m.key == k || m.key == "<"+k+">" {
 				matches[0] = append(matches[0], m)
-			} else if strings.HasPrefix(m.key, c.Key) || strings.HasPrefix(m.key, "<"+c.Key) {
+			} else if strings.HasPrefix(m.key, k) || strings.HasPrefix(m.key, "<"+k) {
 				matches[1] = append(matches[1], m)
-			} else if strings.Contains(m.key, c.Key) {
+			} else if strings.Contains(m.key, k) {
 				matches[2] = append(matches[2], m)
 			}
 		}
 	}
-	piper := c.Piper
-	pargs := []string{}
-	if piper == "vimless" {
-		piper = "vim"
-		conf := filepath.Join(c.RuntimePath, "macros", "less.vim")
-		pargs = []string{"-u", conf}
-	} else if piper == "bat" {
-		pargs = []string{"--style", "plain"}
-	}
-	waiter, out, err := Piper(piper, pargs)
-	if err != nil {
-		return err
-	}
 	for i, s := range matches {
 		for _, m := range s {
-			fmt.Fprintln(out, "match level ", i)
+			if i > 0 {
+				fmt.Fprintln(out, "inexact match")
+			}
 			b, err := ioutil.ReadFile(filepath.Join(c.RuntimePath, "doc", m.file))
 			if err != nil {
 				return err
@@ -96,12 +127,36 @@ func (c *VimHelpCmd) Execute(args []string) error {
 			if len(lines) > c.MaxLines {
 				lines = lines[:c.MaxLines]
 			}
-			fmt.Fprintf(out, "\u001b[1m%s\u001b[0m\n", lines[0])
+			fmt.Fprintln(out, "vim help")
+			fmt.Fprintln(out, bold(lines[0]))
 			fmt.Fprintln(out, strings.Join(lines[1:], "\n"))
 			return waiter()
 		}
 	}
-	return errors.New("not found or some error")
+	fmt.Fprintln(out, "no 'help' found")
+	return nil
+}
+
+var (
+	bold      = termEsc("\u001b[1m%s\u001b[0m")
+	underline = termEsc("\u001b[4m%s\u001b[0m")
+	reverse   = termEsc("\u001b[7m%s\u001b[0m")
+	black     = termEsc("\033[1;30m%s\033[0m")
+	red       = termEsc("\033[1;31m%s\033[0m")
+	green     = termEsc("\033[1;32m%s\033[0m")
+	yellow    = termEsc("\033[1;33m%s\033[0m")
+	purple    = termEsc("\033[1;34m%s\033[0m")
+	magenta   = termEsc("\033[1;35m%s\033[0m")
+	teal      = termEsc("\033[1;36m%s\033[0m")
+	white     = termEsc("\033[1;37m%s\033[0m")
+)
+
+func termEsc(colorString string) func(string, ...interface{}) string {
+	sprint := func(t string, args ...interface{}) string {
+		return fmt.Sprintf(colorString,
+			fmt.Sprintf(t, args...))
+	}
+	return sprint
 }
 
 type CliHelpCmd struct {
