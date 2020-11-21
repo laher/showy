@@ -71,12 +71,13 @@ func (c *VimHelpCmd) Execute(args []string) error {
 		if len(parts) > 1 {
 			k = parts[1]
 		}
+		// todo: format tags?
 		fmt.Fprintln(out, reverse(parts[0]))
 		prefs := map[string]string{"normal: ": "Normal Mode command", "visual: ": "Visual mode command", ":set ": "Set a variable", ":call ": "Call a function", ":": "Ex mode command"}
 		for pref, desc := range prefs {
 			if strings.HasPrefix(k, pref) {
 				k = k[len(pref):]
-				fmt.Fprintf(out, teal("%s:\n", desc))
+				fmt.Fprintf(out, "%s:\n", desc)
 				break
 			}
 		}
@@ -84,7 +85,11 @@ func (c *VimHelpCmd) Execute(args []string) error {
 	default:
 		fmt.Fprintln(out, green("%s\n", k))
 	}
-
+	// bang isn't usually part of the key
+	if strings.HasSuffix(k, "!") {
+		k = k[:len(k)-1]
+	}
+	// use the tags file...
 	b, err := ioutil.ReadFile(filepath.Join(c.RuntimePath, "doc", "tags"))
 	if err != nil {
 		return err
@@ -111,9 +116,6 @@ func (c *VimHelpCmd) Execute(args []string) error {
 	}
 	for i, s := range matches {
 		for _, m := range s {
-			if i > 0 {
-				fmt.Fprintln(out, "inexact match")
-			}
 			b, err := ioutil.ReadFile(filepath.Join(c.RuntimePath, "doc", m.file))
 			if err != nil {
 				return err
@@ -127,12 +129,17 @@ func (c *VimHelpCmd) Execute(args []string) error {
 			if len(lines) > c.MaxLines {
 				lines = lines[:c.MaxLines]
 			}
-			fmt.Fprintln(out, "vim help")
+			br := ""
+			if i > 0 {
+				br = " (inexact match)"
+			}
+			fmt.Fprintf(out, "Vim help%s:\n", br)
 			fmt.Fprintln(out, bold(lines[0]))
 			fmt.Fprintln(out, strings.Join(lines[1:], "\n"))
 			return waiter()
 		}
 	}
+	// TODO: check runtimepath segments for 'doc' files
 	fmt.Fprintln(out, "no 'help' found")
 	return nil
 }
